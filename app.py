@@ -2,7 +2,7 @@
 """
 Interface Text Mining (Flask) :
   1) NER -> sortie BIO        2) Classification        3) Recherche TF-IDF (cosinus)
-  4) RAG avec choix du LLM (ChatGPT / DeepSeek)        5) Métriques (cross-validation)
+  4) RAG avec choix du LLM (ChatGPT / DeepSeek / Gemini)   5) Métriques (cross-validation)
 Lancer :  python app.py   puis ouvrir http://127.0.0.1:5000
 """
 import os, json, re, joblib
@@ -78,6 +78,7 @@ def api_recherche():
 LLMS = {
     "ChatGPT": {"url": "https://api.openai.com/v1/chat/completions", "modele": "gpt-4o-mini", "env": "OPENAI_API_KEY"},
     "DeepSeek": {"url": "https://api.deepseek.com/chat/completions", "modele": "deepseek-chat", "env": "DEEPSEEK_API_KEY"},
+    "Gemini": {"url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "modele": "gemini-flash-latest", "secours": ["gemini-3.5-flash-lite"], "env": "GEMINI_API_KEY"},
 }
 
 
@@ -94,17 +95,28 @@ def api_rag():
     contexte = "\n\n".join(f"[{i+1}] ({s['fichier']})\n{s['texte'][:1800]}" for i, s in enumerate(sources))
     consigne = ("Tu es un assistant juridique marocain. Réponds UNIQUEMENT à partir des décisions fournies. "
                 "Si l'information n'y est pas, dis-le. Cite les sources avec [1], [2], [3]. Réponds dans la langue de la question.")
-    try:
-        r = requests.post(cfg["url"], timeout=90,
-                          headers={"Authorization": f"Bearer {cle}", "Content-Type": "application/json"},
-                          json={"model": cfg["modele"], "temperature": 0,
-                                "messages": [{"role": "system", "content": consigne},
-                                             {"role": "user", "content": f"Décisions :\n{contexte}\n\nQuestion : {question}"}]})
-        r.raise_for_status()
-        reponse = r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        return jsonify({"erreur": f"Appel {nom} échoué : {e}"}), 502
-    return jsonify({"reponse": reponse, "sources": [{"fichier": s["fichier"], "score": s["score"]} for s in sources]})
+    import time
+    messages = [{"role": "system", "content": consigne},
+                {"role": "user", "content": f"Décisions :\n{contexte}\n\nQuestion : {question}"}]
+    derniere = ""
+    # on essaie le modèle principal puis le modèle de secours ; 2 essais chacun si le serveur est surchargé (503/429)
+    for modele in [cfg["modele"]] + cfg.get("secours", []):
+        for essai in range(2):
+            try:
+                r = requests.post(cfg["url"], timeout=90,
+                                  headers={"Authorization": f"Bearer {cle}", "Content-Type": "application/json"},
+                                  json={"model": modele, "temperature": 0, "messages": messages})
+            except Exception as e:
+                return jsonify({"erreur": f"Appel {nom} échoué : {e}"}), 502
+            if r.ok:
+                reponse = r.json()["choices"][0]["message"]["content"]
+                return jsonify({"reponse": reponse,
+                                "sources": [{"fichier": s["fichier"], "score": s["score"]} for s in sources]})
+            derniere = f"Appel {nom} échoué ({r.status_code}, modèle {modele}) : {r.text[:300]}"
+            if r.status_code not in (429, 500, 503):
+                return jsonify({"erreur": derniere}), 502
+            time.sleep(3)
+    return jsonify({"erreur": derniere + " — serveur surchargé, réessaie dans une minute."}), 502
 
 
 # ------------------------------------------------------------------ Métriques
@@ -154,7 +166,7 @@ table{border-collapse:collapse;margin-top:10px}td,th{border:1px solid #ccc;paddi
 <input id="rch_q" placeholder="requête en arabe"><button class="act" onclick="rch()">Chercher</button><div id="rch_out"></div></section>
 
 <section id="rag"><h3>RAG : répondre à partir des décisions</h3>
-<small>LLM</small><select id="rag_llm"><option>ChatGPT</option><option>DeepSeek</option></select>
+<small>LLM</small><select id="rag_llm"><option>ChatGPT</option><option>DeepSeek</option><option>Gemini</option></select>
 <small>Clé API (facultatif si la variable d'environnement existe)</small><input id="rag_key" type="password">
 <input id="rag_q" placeholder="question"><button class="act" onclick="rag()">Répondre</button><div id="rag_out"></div></section>
 
