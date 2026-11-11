@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.vscode/
+.env
+
+# gros fichiers générés (se recréent avec les scripts)
+models/tfidf_index.joblib
+
+# données de la Cour de cassation
+data/
